@@ -31,8 +31,8 @@
 ## 附註
 - 本專案中之.cpp檔無外部依賴，迅速試跑可直接貼進VScode/VS或其他編譯軟體測試
 
-## 模擬器輸出示意圖
+## 模擬器輸出示意圖 完整輸出請見.txt附檔
 <p align="center">
   <img src="image/slot_Combo_Multiplier_Sim.png"  width="700" alt="模擬輸出截圖">
-  <br><sub>RTP、獎項分佈等主要遊戲表現，完整輸出請見.txt附檔</sub>
+  <br><sub>RTP、獎項分佈等主要遊戲表現</sub>
 </p>

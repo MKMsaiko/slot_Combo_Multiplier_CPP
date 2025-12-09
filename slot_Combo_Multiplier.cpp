@@ -95,7 +95,6 @@ Wild皆出現在2-5轉輪，可替代除Scatter外之任意符號
 
     在 worker 中，每轉 bumpCnt++，累積到 4096 轉時：
         spinsDone.fetch_add(4096)；e 印出目前進度、速度與預估剩餘時間。
-    progressThread 依 spinsDon
 */
 
 #ifdef _WIN32
@@ -1204,7 +1203,6 @@ int main()
     double rtpFG = total.freeWinSum / totalBet;
     double rtpTotal = totalWin / totalBet;
 
-    // 印基本設定
     cout << "=== Monte Carlo | workers=" << workers
          << " | spins=" << numSpins
          << " | ways=" << numWays
@@ -1219,10 +1217,7 @@ int main()
     cout << "END_Spin  : aftMultX_FG_EndSpin=" << aftMultX_FG_EndSpin
          << ", pEndSpin=" << pEndSpin << "\n";
 
-    // 固定小數格式
     cout << fixed;
-
-    // 金額與 RTP：小數 2 位
     cout << setprecision(2);
     cout << "\n";
     cout << "總成本 (Total Bet)                    : " << totalBet << "\n";

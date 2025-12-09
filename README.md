@@ -1,6 +1,6 @@
 # slot_Combo_Multiplier_C++
 
-- Slot simulator demo
+- Slot simulator demo - Cascading Way Game
 
 - 模擬遊戲數據，輸出各項統計資料
 

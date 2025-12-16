@@ -12,7 +12,7 @@ Wild皆出現在2-5轉輪，可替代除Scatter外之任意符號
 賠率表以1024 ways總押注1作計算
 
 程式流程：
-依處理器thread數 → 分數個worker → 各自做以下 1–7 → 彙整輸出
+依處理器thread數 → 分數個worker → 各自做以下 1–7 → 彙整輸出(含CSV)
 
 1. 主遊戲初轉（MG）
 
@@ -54,22 +54,22 @@ Wild皆出現在2-5轉輪，可替代除Scatter外之任意符號
                 否則用普通 FG spin 帶 reelsFGSpin。
                 → 呼叫 w.spinInit(選到的 spin 帶)。
 
-            這一轉內再進入「連消」迴圈：
+            進入本轉的「連消」迴圈：
                 呼叫 evalWays(w) 算贏分，沒贏分就結束這一轉。
                 第一次有贏分：記到 fgInitLenCount；每一步都記到 fgLenCount。
                 把本步贏分乘上目前跨轉倍率 mult，加到 res.total；turnCombo++。
 
                 判斷該步補帶：
-                    若 mult ≥ aftMultX_FG_EndRefill：
+                    (1)若 mult ≥ aftMultX_FG_EndRefill：
                         優先以 pEndRefill 切入 END_Refill（reelsFG_END_Refill，整轉補符鎖在 END 模式），並記錄第一次切入的 turnIndex；
-                    若沒有切 END 且目前仍是 Normal：
+                    (2)若沒有切 END 且目前仍是 Normal：
                         以 pAftX_FG_AftMultX 切到 AftX 補帶 reelsFGRefillAftX。
-                    若 mult 還沒到門檻：
+                    (3)若 mult 還沒到門檻：
                         沿用原先 combo 版 AftX 邏輯（turnCombo ≥ AftComboX_FG 時，以 pAftX_FG 切到 AftX）。
                     每次模式切換都 resetHybridRefillState。
                     用目前選到的補帶（Normal / AftX / END）呼叫 applyCascadesHybrid，做消除 + 補符。
 
-                FG 跨轉倍率更新：
+                更新FG 跨轉倍率：
                     呼叫 nextFGMult(mult)，依序 1→2→4→6→…→50 封頂，同時更新這段的 segPeak。
 
             這轉連消結束後，數盤面 Scatter：
@@ -79,22 +79,28 @@ Wild皆出現在2-5轉輪，可替代除Scatter外之任意符號
                 並把 add 依 8,10,12.. 併入 retriggerDist。
                 把這轉 turnCombo 併到 fgComboHist（>20 併入 20），更新整段最長 FG combo。
 
-5. 整段 FG 派彩加權、累計
+5. 整段 FG 派彩加權、累計至 worker
 
     以 segPeak 更新 peakMultHist、peakMultAvg、peakMultMax。
     把該段實際總場次 spins 併到 fgSegLenHist（1..50）。
     END 使用次數與第一次 END_Refill 切入轉數透過 FGRunResult 回傳給 worker。
     worker 把本段 FG 的贏分（res.total）、spins、retri、END 統計等，累加到自己的 local Stats。
 
-6. 單把結果累計與分層
+6. worker 端累計單把結果與分層統計
 
-    該把總贏分 spinTotal = mgWin + fgWin。
-    依 spinTotal / bet，更新 Big / Mega / Super / Holy / Jumbo / Jojo 分層，並更新 maxSingleSpin。
+    對每一把：
+        spinTotal = mgWin + fgWin。
+        依 spinTotal / bet 分類為 Big / Mega / Super / Holy / Jumbo / Jojo，並更新 maxSingleSpin。
+        若有 FG，則累加 freeWinSum、totalFGSpins、retriggerCount、triggerCount 等統計。
+        若 MG 完全無贏分且未觸發 FG，則 deadSpins++。
 
-7. 進度心跳
+7. 進度心跳（跨 worker）
 
-    在 worker 中，每轉 bumpCnt++，累積到 4096 轉時：
-        spinsDone.fetch_add(4096)；e 印出目前進度、速度與預估剩餘時間。
+    每個 worker 在迴圈中，每轉 bumpCnt++，累積到 4096 轉時：
+        spinsDone.fetch_add(4096)，並將 bumpCnt 歸零。
+
+    獨立的 progressThread 每秒讀取 spinsDone 與起始時間：
+        每秒讀取 spinsDone，計算目前完成比例、模擬速度與預估剩餘時間。
 */
 
 #ifdef _WIN32
@@ -113,6 +119,9 @@ Wild皆出現在2-5轉輪，可替代除Scatter外之任意符號
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
 
 using namespace std;
 
@@ -925,6 +934,215 @@ struct Stats
 };
 
 /**************
+ * 輔助：符號標籤
+ **************/
+string symLabel(int t)
+{
+    switch (t)
+    {
+    case S9:
+        return "9";
+    case S10:
+        return "10";
+    case SJ:
+        return "J";
+    case SQ:
+        return "Q";
+    case SK:
+        return "K";
+    case SB:
+        return "B";
+    case SF:
+        return "F";
+    case SR:
+        return "R";
+    default:
+        return "-";
+    }
+}
+
+/**************
+ * CSV
+ **************/
+const string outputDir = "csv";
+
+bool ensureDir(const string &dir)
+{
+    try
+    {
+        std::filesystem::create_directories(dir);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+string toFixed(double v, int prec)
+{
+    std::ostringstream oss;
+    oss.setf(std::ios::fixed);
+    oss << std::setprecision(prec) << v;
+    return oss.str();
+}
+
+bool writeComboHistCSV(
+    const string &filename,
+    const array<int64_t, 21> &hist,
+    double denominator) // MG: totalSpins; FG: fgSpinCount
+{
+    ofstream f(filename);
+    if (!f.is_open())
+        return false;
+
+    f << "combo,count,ratio\n";
+
+    for (int c = 0; c <= 20; ++c)
+    {
+        int64_t count = hist[c];
+        double ratio = (denominator > 0.0)
+                           ? (static_cast<double>(count) / denominator)
+                           : 0.0;
+        f << c << ","
+          << count << ","
+          << toFixed(ratio, 8) << "\n";
+    }
+    return true;
+}
+
+bool writeFGSegLenHistCSV(
+    const string &filename,
+    const array<int64_t, 51> &hist, // 0..50, 用 1..maxFGTotalSpins
+    int64_t triggerCount)
+{
+    ofstream f(filename);
+    if (!f.is_open())
+        return false;
+
+    f << "len,count,prob_per_trigger\n";
+
+    double den = static_cast<double>(triggerCount);
+    for (int l = 1; l <= maxFGTotalSpins; ++l)
+    {
+        int64_t count = hist[l];
+        if (count == 0)
+            continue;
+        double p = (den > 0.0)
+                       ? (static_cast<double>(count) / den)
+                       : 0.0;
+        f << l << ","
+          << count << ","
+          << toFixed(p, 8) << "\n";
+    }
+    return true;
+}
+
+bool writePeakMultHistCSV(
+    const string &filename,
+    const array<int64_t, 51> &hist, // 0..50，用 1..50
+    int64_t triggerCount)
+{
+    ofstream f(filename);
+    if (!f.is_open())
+        return false;
+
+    f << "multiplier,count,prob_per_trigger\n";
+
+    double den = static_cast<double>(triggerCount);
+    for (int m = 1; m <= 50; ++m)
+    {
+        int64_t count = hist[m];
+        if (count == 0)
+            continue;
+        double p = (den > 0.0)
+                       ? (static_cast<double>(count) / den)
+                       : 0.0;
+        f << m << ","
+          << count << ","
+          << toFixed(p, 8) << "\n";
+    }
+    return true;
+}
+
+bool writeSymbolLenCSV(
+    const string &filename,
+    const array<array<int64_t, 3>, NumSymbols> &lenCount)
+{
+    ofstream f(filename);
+    if (!f.is_open())
+        return false;
+
+    f << "symbol,len3_count,len4_count,len5_count\n";
+
+    int symbols[] = {S9, S10, SJ, SQ, SK, SB, SF, SR};
+
+    for (int t : symbols)
+    {
+        f << symLabel(t) << ","
+          << lenCount[t][0] << ","
+          << lenCount[t][1] << ","
+          << lenCount[t][2] << "\n";
+    }
+    return true;
+}
+
+bool writeAllCSVs(
+    const string &dir,
+    int64_t totalSpins,
+    const Stats &s)
+{
+    if (!ensureDir(dir))
+    {
+        std::cerr << "建立資料夾失敗: " << dir << "\n";
+        return false;
+    }
+
+    // FG 逐轉總筆數（FG combo 分布分母）
+    int64_t fgSpinCount = 0;
+    for (int c = 0; c <= 20; ++c)
+    {
+        fgSpinCount += s.fgComboHist[c];
+    }
+
+    if (!writeComboHistCSV(
+            dir + "/mg_combo_hist.csv",
+            s.mgComboHist,
+            static_cast<double>(totalSpins)))
+        return false;
+
+    if (!writeComboHistCSV(
+            dir + "/fg_combo_hist.csv",
+            s.fgComboHist,
+            static_cast<double>(fgSpinCount)))
+        return false;
+
+    if (!writeFGSegLenHistCSV(
+            dir + "/fg_segment_length_hist.csv",
+            s.fgSegLenHist,
+            s.triggerCount))
+        return false;
+
+    if (!writePeakMultHistCSV(
+            dir + "/fg_peak_mult_hist.csv",
+            s.peakMultHist,
+            s.triggerCount))
+        return false;
+
+    if (!writeSymbolLenCSV(
+            dir + "/mg_symbol_len_counts.csv",
+            s.mgLenCount))
+        return false;
+
+    if (!writeSymbolLenCSV(
+            dir + "/fg_symbol_len_counts.csv",
+            s.fgLenCount))
+        return false;
+
+    return true;
+}
+
+/**************
  * 心跳
  **************/
 atomic<int64_t> spinsDone{0};
@@ -1053,34 +1271,6 @@ void workerFunc(int idx, int64_t spins, Stats &out, int64_t seed)
     if (bumpCnt > 0)
         spinsDone.fetch_add(bumpCnt);
     out = local;
-}
-
-/**************
- * 輔助：符號標籤
- **************/
-string symLabel(int t)
-{
-    switch (t)
-    {
-    case S9:
-        return "9";
-    case S10:
-        return "10";
-    case SJ:
-        return "J";
-    case SQ:
-        return "Q";
-    case SK:
-        return "K";
-    case SB:
-        return "B";
-    case SF:
-        return "F";
-    case SR:
-        return "R";
-    default:
-        return "-";
-    }
 }
 
 /**************
@@ -1450,6 +1640,15 @@ int main()
              << "  : 3連=" << setw(10) << c3
              << "  4連=" << setw(10) << c4
              << "  5連=" << setw(10) << c5 << "\n";
+    }
+
+    // === CSV 輸出 ===
+    if (!writeAllCSVs(
+            outputDir,
+            numSpins,
+            total))
+    {
+        cerr << "寫入 CSV 發生錯誤\n";
     }
 
     return 0;

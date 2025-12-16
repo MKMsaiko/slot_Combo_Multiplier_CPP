@@ -30,9 +30,18 @@
 
 ## 附註
 - 本專案中之.cpp檔無外部依賴，迅速試跑可直接貼進VScode/VS或其他編譯軟體測試
+- 模擬器執行後部分統計會輸出csv檔，可接著執行plot_csv.py生成圖檔
+  - Python 3.9+
+  - pip install pandas matplotlib
+  - python plot_csv.py
 
 ## 模擬器輸出示意圖 完整輸出請見.txt附檔
 <p align="center">
   <img src="image/slot_Combo_Multiplier_Sim.png"  width="700" alt="模擬輸出截圖">
   <br><sub>RTP、獎項分佈等主要遊戲表現</sub>
+</p>
+
+## Python腳本生成圖檔範例
+<p align="center">
+  <img src="image/fg_peak_mult_hist.png" width="700" alt="模擬輸出截圖">
 </p>
